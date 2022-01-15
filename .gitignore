@@ -1,0 +1,13 @@
+*.swp
+*~
+*.*~
+*.lib
+*.obj
+*.pdb
+*.zip
+*.rdbg
+*.exe
+*.cap
+
+zig-cache/
+zig-out/
