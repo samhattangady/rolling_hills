@@ -17,6 +17,11 @@ comptime {
     assert(TERRAIN_WIDTH > 1);
 }
 const pi = 3.14159265358979323846264338327950288419716939937510;
+const bunny_width = 14;
+const bunny_height = 16;
+const bunny_flags = 1; // BLIT_2BPP
+const bunny = [_]u8{ 0x00, 0x18, 0x0b, 0x00, 0x00, 0x56, 0x2a, 0xc0, 0x00, 0x56, 0x2a, 0xc0, 0x00, 0xd6, 0x2a, 0xc0, 0x00, 0xd6, 0xfe, 0xc0, 0x00, 0x56, 0x57, 0xc0, 0x03, 0x55, 0x55, 0x40, 0x01, 0x55, 0xf5, 0xf0, 0x0a, 0x95, 0x55, 0x70, 0x03, 0x65, 0x55, 0x70, 0x00, 0x95, 0x56, 0xc0, 0x00, 0xd9, 0x6b, 0x00, 0x03, 0x65, 0xd5, 0xc0, 0x03, 0x75, 0xd5, 0xc0, 0x00, 0xdf, 0x57, 0x00, 0x00, 0x35, 0x5c, 0x00 };
+const assets = @import("../assets/aseprite_import.zig");
 
 const TerrainDirection = enum {
     up,
@@ -38,6 +43,7 @@ const TerrainDirection = enum {
 };
 
 var prev_gamepad: u8 = 0;
+var prev_note: ?u32 = null;
 var ticks: u32 = 0;
 var x_pos: f32 = 0;
 var wave_slope: f32 = 1.0;
@@ -112,10 +118,10 @@ const ode_to_joy: [128]?Note = [_]?Note{
 export fn start() void {
     update_terrain();
     w4.PALETTE.* = .{
-        0x312137,
-        0x1a2129,
-        0x713141,
-        0x512839,
+        0x555577,
+        0x777799,
+        0x9999bb,
+        0xbbbbdd,
     };
 }
 
@@ -150,7 +156,7 @@ export fn update() void {
     slope_dir = if (terrain_height_next > terrain_height) TerrainDirection.down else TerrainDirection.up;
 
     // if player just hit ground, as is on up slope, then they need to slow down their xvel
-    if ((ticks - prev_slow > 60) and (ticks - prev_released > 20) and prev_ground and !ground_contact and slope_dir == .up) {
+    if ((ticks - prev_slow > 60) and (ticks - prev_released > 20) and !prev_ground and ground_contact and slope_dir == .up) {
         player_vel.x *= 0.7;
         player_vel.x = clamp(player_vel.x, PLAYER_MIN_X_SPEED, 2.0);
         prev_slow = ticks;
@@ -193,29 +199,34 @@ export fn update() void {
     } else {}
     player_vel.x = clamp(player_vel.x, PLAYER_MIN_X_SPEED, PLAYER_MAX_X_SPEED);
     player_vel.y += 0.11;
+    if (ground_contact and !prev_ground and slope_dir == .up) player_vel.y *= 0.8;
     if (prev_slow == ticks and player_vel.y < -PLAYER_MIN_X_SPEED)
         player_vel.y = -PLAYER_MIN_X_SPEED;
 
     update_terrain();
+    w4.DRAW_COLORS.* = 0x33;
+    w4.rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     {
         var i: u16 = 0;
         while (i < SCREEN_WIDTH) : (i += 1) {
             const terrain_index = (i + @floatToInt(u16, x_pos));
             const y = terrain_height_at(terrain_index);
-            w4.DRAW_COLORS.* = 0x44;
+            w4.DRAW_COLORS.* = 0x22;
             w4.vline(@intCast(i32, i), y, SCREEN_HEIGHT);
         }
     }
     if (@intToFloat(f32, terrain_height) - player_pos.y < PLAYER_RADIUS * 1.5) {
-        w4.DRAW_COLORS.* = 0x22;
+        w4.DRAW_COLORS.* = 0x11;
     } else {
-        w4.DRAW_COLORS.* = 0x20;
+        w4.DRAW_COLORS.* = 0x10;
     }
     w4.oval(player_pos.xi() - PLAYER_RADIUS, player_pos.yi() - PLAYER_RADIUS, PLAYER_RADIUS * 2, PLAYER_RADIUS * 2);
+    w4.DRAW_COLORS.* = 0x2013;
+    w4.blit(bunny[0..], 10, 10, bunny_width, bunny_height, bunny_flags);
     if (prev_slow == ticks) {
         w4.DRAW_COLORS.* = 0x44;
         w4.oval(player_pos.xi() - 2, player_pos.yi() - 2, 4, 4);
-        w4.tone(100, 1 | (20 << 8), 30, w4.TONE_NOISE);
+        w4.tone(100, 5 | (20 << 8), music_volume(), w4.TONE_NOISE);
     }
     speed_average[ticks % speed_average.len] = player_vel.x;
     handle_music();
@@ -229,13 +240,19 @@ export fn update() void {
 fn handle_music() void {
     const avg = avg_speed();
     const interval = @floatToInt(i32, map(PLAYER_MIN_X_SPEED, PLAYER_MAX_X_SPEED, 24, 6, avg));
-    // const t = ticks % interval;
     if (ticks - prev_note_played >= interval) {
         prev_note_played = ticks;
-        if (get_note()) |freq| {
-            w4.tone(freq, 6 | (60 << 8), music_volume(), w4.TONE_TRIANGLE);
-            w4.tone(freq / 2, 6 | (12 << 8), 1 + (music_volume() / 10), w4.TONE_PULSE1);
+        const note = get_note();
+        if (note) |freq| {
+            const volume = music_volume();
+            w4.tone(freq / 2, 6 | (12 << 8), 1 + (volume / 10), w4.TONE_PULSE1);
+            w4.tone(freq, 12 | (12 << 8), 1 + (volume / 10), w4.TONE_PULSE2);
+            if (music_volume() > 50) {
+                const vol2 = @floatToInt(u32, map(50, 80, 0, 60, @intToFloat(f32, volume)));
+                w4.tone(freq, 6 | (60 << 8), vol2, w4.TONE_TRIANGLE);
+            }
         }
+        prev_note = note;
     }
 }
 
@@ -259,8 +276,8 @@ fn avg_speed() f32 {
 fn music_volume() u32 {
     if (false) return 50;
     const avg = avg_speed();
-    if (avg < 1.3) return 0;
-    return @floatToInt(u32, map(1.3, PLAYER_MAX_X_SPEED, 0, 80, avg));
+    if (avg < 1.3) return 10;
+    return @floatToInt(u32, map(1.3, PLAYER_MAX_X_SPEED, 10, 80, avg));
 }
 
 fn update_terrain() void {
