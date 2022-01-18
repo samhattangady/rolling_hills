@@ -17,11 +17,10 @@ comptime {
     assert(TERRAIN_WIDTH > 1);
 }
 const pi = 3.14159265358979323846264338327950288419716939937510;
-const bunny_width = 14;
-const bunny_height = 16;
-const bunny_flags = 1; // BLIT_2BPP
-const bunny = [_]u8{ 0x00, 0x18, 0x0b, 0x00, 0x00, 0x56, 0x2a, 0xc0, 0x00, 0x56, 0x2a, 0xc0, 0x00, 0xd6, 0x2a, 0xc0, 0x00, 0xd6, 0xfe, 0xc0, 0x00, 0x56, 0x57, 0xc0, 0x03, 0x55, 0x55, 0x40, 0x01, 0x55, 0xf5, 0xf0, 0x0a, 0x95, 0x55, 0x70, 0x03, 0x65, 0x55, 0x70, 0x00, 0x95, 0x56, 0xc0, 0x00, 0xd9, 0x6b, 0x00, 0x03, 0x65, 0xd5, 0xc0, 0x03, 0x75, 0xd5, 0xc0, 0x00, 0xdf, 0x57, 0x00, 0x00, 0x35, 0x5c, 0x00 };
-const assets = @import("../assets/aseprite_import.zig");
+const PLAYER_WIDTH = 14;
+const PLAYER_HEIGHT = 14;
+const BLIT_FLAG = 1; // BLIT_2BPP
+const player_sprites = @import("player_sprites.zig").player_sprites;
 
 const TerrainDirection = enum {
     up,
@@ -40,6 +39,11 @@ const TerrainDirection = enum {
             .down => return change > 0,
         };
     }
+};
+
+const Trail = struct {
+    y: i8,
+    val: u8,
 };
 
 var prev_gamepad: u8 = 0;
@@ -67,6 +71,8 @@ var seed: f32 = 12490813.0;
 var note_index: u32 = 0;
 var speed_average: [60]f32 = undefined;
 var prev_note_played: u32 = 0;
+var trails: [30]Trail = undefined;
+var prev_trail_update: u32 = 0;
 
 const NUM_WAVE_POINTS = SCREEN_WIDTH * TERRAIN_WIDTH;
 
@@ -184,7 +190,7 @@ export fn update() void {
                 const terrain_height_prev = terrain_height_at(@floatToInt(u16, x_pos - player_vel.x) + @intCast(u16, player_pos.xi())) - PLAYER_RADIUS;
                 const y_diff = terrain_height - terrain_height_prev;
                 player_vel.y = @intToFloat(f32, y_diff);
-                if (ticks - prev_released < 20) player_vel.y *= 1.2;
+                if (ticks - prev_released < 20) player_vel.y *= max(player_vel.x / 2.0, 1.2);
                 player_vel.y = clamp(player_vel.y, -player_vel.x * 2, -player_vel.x * 0.5);
             },
             .down => {
@@ -204,31 +210,28 @@ export fn update() void {
         player_vel.y = -PLAYER_MIN_X_SPEED;
 
     update_terrain();
-    w4.DRAW_COLORS.* = 0x33;
+    w4.DRAW_COLORS.* = 0x22;
     w4.rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     {
         var i: u16 = 0;
         while (i < SCREEN_WIDTH) : (i += 1) {
             const terrain_index = (i + @floatToInt(u16, x_pos));
             const y = terrain_height_at(terrain_index);
-            w4.DRAW_COLORS.* = 0x22;
+            w4.DRAW_COLORS.* = 0x33;
             w4.vline(@intCast(i32, i), y, SCREEN_HEIGHT);
         }
     }
-    if (@intToFloat(f32, terrain_height) - player_pos.y < PLAYER_RADIUS * 1.5) {
-        w4.DRAW_COLORS.* = 0x11;
+    update_player_trails();
+    draw_player_trails();
+    if (ticks - prev_slow < 5) {
+        w4.DRAW_COLORS.* = 0x0440;
     } else {
-        w4.DRAW_COLORS.* = 0x10;
+        w4.DRAW_COLORS.* = 0x0310;
     }
-    w4.oval(player_pos.xi() - PLAYER_RADIUS, player_pos.yi() - PLAYER_RADIUS, PLAYER_RADIUS * 2, PLAYER_RADIUS * 2);
-    w4.DRAW_COLORS.* = 0x2013;
-    w4.blit(bunny[0..], 10, 10, bunny_width, bunny_height, bunny_flags);
-    if (prev_slow == ticks) {
-        w4.DRAW_COLORS.* = 0x44;
-        w4.oval(player_pos.xi() - 2, player_pos.yi() - 2, 4, 4);
-        w4.tone(100, 5 | (20 << 8), music_volume(), w4.TONE_NOISE);
-    }
+    const sprite = player_sprites[get_sprite_index(button_down, terrain_height)][0..].ptr;
+    w4.blit(sprite, player_pos.xi() - PLAYER_RADIUS, player_pos.yi() - PLAYER_RADIUS, PLAYER_WIDTH, PLAYER_HEIGHT, BLIT_FLAG);
     speed_average[ticks % speed_average.len] = player_vel.x;
+    if (prev_slow == ticks) w4.tone(100, 5 | (20 << 8), music_volume(), w4.TONE_NOISE);
     handle_music();
     prev_gamepad = w4.GAMEPAD1.*;
     ticks += 1;
@@ -237,9 +240,67 @@ export fn update() void {
     prev_ground = ground_contact;
 }
 
+fn update_player_trails() void {
+    if (@floatToInt(u32, x_pos) == prev_trail_update) return;
+    const shift = @floatToInt(u32, x_pos) - prev_trail_update;
+    prev_trail_update = @floatToInt(u32, x_pos);
+    assert(shift != 0);
+    var i: u8 = 0;
+    while (i < trails.len - shift) : (i += 1) {
+        trails[i] = trails[i + shift];
+        // taper the trail as it leaves the screen
+        trails[i].val = min(trails[i].val, i / 2);
+    }
+    const amount = min(1.0, @intToFloat(f32, music_volume2()) / 40.0);
+    while (i < trails.len) : (i += 1) {
+        trails[i] = Trail{ .y = @floatToInt(i8, player_pos.y), .val = @floatToInt(u8, map(0, 1, 0, 12, amount)) };
+    }
+}
+
+fn draw_player_trails() void {
+    w4.DRAW_COLORS.* = 0x4444;
+    for (trails) |trail, x| {
+        // taper the trail
+        const val = if (trails.len - x < 3) min(trail.val, (trails.len - x) * 5) else trail.val;
+        const y = trail.y - @divFloor(@intCast(i8, val), 2);
+        w4.vline(@intCast(i32, x), @intCast(i32, y), val);
+    }
+}
+
+fn get_sprite_index(button_down: bool, terrain_height: i32) usize {
+    // 0 - flat
+    // 2 - 45 facing down (y_front - y_back = 3)
+    // 4 - 45 facing up   (y_front - y_back = -3)
+    // +0 if button is down
+    // +1 if button is released
+    var index: usize = 0;
+    const terrain_height_back = terrain_height_at(@floatToInt(u16, x_pos) + @intCast(u16, player_pos.xi()) - 3) - PLAYER_RADIUS;
+    const terrain_height_front = terrain_height_at(@floatToInt(u16, x_pos) + @intCast(u16, player_pos.xi()) + 3) - PLAYER_RADIUS;
+    const ydiff = terrain_height_front - terrain_height_back;
+    if (ydiff > 2) {
+        index = 2;
+    } else if (ydiff < -2) {
+        index = 4;
+    } else {
+        index = 0;
+    }
+    // if in the air, use the velocity dir
+    if (@intToFloat(f32, terrain_height) - player_pos.y > PLAYER_RADIUS) {
+        if (player_vel.y > player_vel.x) {
+            index = 2;
+        } else if (-player_vel.y > player_vel.x) {
+            index = 4;
+        } else {
+            index = 0;
+        }
+    }
+    if (!button_down) index += 1;
+    return index;
+}
+
 fn handle_music() void {
     const avg = avg_speed();
-    const interval = @floatToInt(i32, map(PLAYER_MIN_X_SPEED, PLAYER_MAX_X_SPEED, 24, 6, avg));
+    const interval = @floatToInt(i32, map(PLAYER_MIN_X_SPEED, PLAYER_MAX_X_SPEED, 36, 12, avg));
     if (ticks - prev_note_played >= interval) {
         prev_note_played = ticks;
         const note = get_note();
@@ -247,10 +308,7 @@ fn handle_music() void {
             const volume = music_volume();
             w4.tone(freq / 2, 6 | (12 << 8), 1 + (volume / 10), w4.TONE_PULSE1);
             w4.tone(freq, 12 | (12 << 8), 1 + (volume / 10), w4.TONE_PULSE2);
-            if (music_volume() > 50) {
-                const vol2 = @floatToInt(u32, map(50, 80, 0, 60, @intToFloat(f32, volume)));
-                w4.tone(freq, 6 | (60 << 8), vol2, w4.TONE_TRIANGLE);
-            }
+            w4.tone(freq, 6 | (60 << 8), music_volume2(), w4.TONE_TRIANGLE);
         }
         prev_note = note;
     }
@@ -278,6 +336,17 @@ fn music_volume() u32 {
     const avg = avg_speed();
     if (avg < 1.3) return 10;
     return @floatToInt(u32, map(1.3, PLAYER_MAX_X_SPEED, 10, 80, avg));
+}
+
+fn music_volume2() u32 {
+    if (false) return 60;
+    const vol = music_volume();
+    if (vol > 50) {
+        const vol2 = @floatToInt(u32, map(50, 80, 0, 60, @intToFloat(f32, vol)));
+        return vol2;
+    } else {
+        return 0;
+    }
 }
 
 fn update_terrain() void {

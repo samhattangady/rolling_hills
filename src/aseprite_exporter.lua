@@ -14,7 +14,7 @@ for cel_index,cel in ipairs(sprite.cels) do
 	image_data = image_data .. "\n\""
 	for it in cel.image:pixels() do
       local pixelValue = it() -- get pixel
-      image_data = image_data .. pixelValue       -- get pixel x,y coordinates
+      image_data = image_data .. pixelValue
     end
 	image_data = image_data .. "\","
     bounds_data = bounds_data .. "\n\"" .. cel.bounds.x .. " " .. cel.bounds.y .. " " .. cel.bounds.width .. " " .. cel.bounds.height .. "\","
@@ -23,10 +23,11 @@ end
 image_data = image_data .. "\n};\n"
 bounds_data = bounds_data .. "\n};\n"
 
-print(image_data);
-print(bounds_data);
 
-filewrite = io.open("c:/Users/user/projects/w4_gamejam/assets/aseprite_import.zig", "w")
+filewrite = io.open("c:/Users/user/projects/w4_gamejam/src/player_sprites_raw.zig", "w")
 filewrite:write(image_data)
 filewrite:write(bounds_data)
 filewrite:close()	
+
+print(image_data);
+print(bounds_data);
