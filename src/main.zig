@@ -124,10 +124,10 @@ const ode_to_joy: [128]?Note = [_]?Note{
 export fn start() void {
     update_terrain();
     w4.PALETTE.* = .{
-        0x555577,
-        0x777799,
-        0x9999bb,
-        0xbbbbdd,
+        0x555599,
+        0x7777bb,
+        0x9999dd,
+        0xddddff,
     };
 }
 
@@ -251,9 +251,13 @@ fn update_player_trails() void {
         // taper the trail as it leaves the screen
         trails[i].val = min(trails[i].val, i / 2);
     }
+    const prev_y = trails[i - 1].y;
     const amount = min(1.0, @intToFloat(f32, music_volume2()) / 40.0);
     while (i < trails.len) : (i += 1) {
-        trails[i] = Trail{ .y = @floatToInt(i8, player_pos.y), .val = @floatToInt(u8, map(0, 1, 0, 12, amount)) };
+        // lerp from prev y.
+        const fract = 1.0 - (@intToFloat(f32, trails.len - i) / @intToFloat(f32, shift));
+        const y: i8 = @floatToInt(i8, lerp(@intToFloat(f32, prev_y), player_pos.y, fract));
+        trails[i] = Trail{ .y = y, .val = @floatToInt(u8, map(0, 1, 0, 12, amount)) };
     }
 }
 
@@ -300,7 +304,7 @@ fn get_sprite_index(button_down: bool, terrain_height: i32) usize {
 
 fn handle_music() void {
     const avg = avg_speed();
-    const interval = @floatToInt(i32, map(PLAYER_MIN_X_SPEED, PLAYER_MAX_X_SPEED, 36, 12, avg));
+    const interval = @floatToInt(i32, map(PLAYER_MIN_X_SPEED, PLAYER_MAX_X_SPEED, 36, 6, avg));
     if (ticks - prev_note_played >= interval) {
         prev_note_played = ticks;
         const note = get_note();
@@ -341,8 +345,8 @@ fn music_volume() u32 {
 fn music_volume2() u32 {
     if (false) return 60;
     const vol = music_volume();
-    if (vol > 50) {
-        const vol2 = @floatToInt(u32, map(50, 80, 0, 60, @intToFloat(f32, vol)));
+    if (vol > 30) {
+        const vol2 = @floatToInt(u32, map(30, 80, 0, 60, @intToFloat(f32, vol)));
         return vol2;
     } else {
         return 0;
@@ -395,6 +399,10 @@ fn map(start_in: f32, end_in: f32, start_out: f32, end_out: f32, val: f32) f32 {
     assert(start_out != end_out);
     const t = (val - start_in) / (end_in - start_in);
     return (start_out * (1.0 - t)) + (end_out * t);
+}
+
+fn lerp(start_val: f32, end_val: f32, t: f32) f32 {
+    return (start_val * (1.0 - t)) + (end_val * t);
 }
 
 fn terrain_height_at(terrain_index: u16) i32 {
