@@ -21,6 +21,27 @@ const PLAYER_WIDTH = 14;
 const PLAYER_HEIGHT = 14;
 const BLIT_FLAG = 1; // BLIT_2BPP
 const player_sprites = @import("player_sprites.zig").player_sprites;
+const title_sprites = @import("title_sprites.zig").title_sprites;
+const title_sprites_bounds = @import("title_sprites.zig").sprite_bounds;
+const moon_sprites = @import("moon_sprites.zig");
+const GAME_TICKS = 3600 + 240;
+
+// main offset of all the moon sprites
+const moon_pos = [_]u8{
+    86,
+    0,
+};
+
+const smiley = [8]u8{
+    0b11000011,
+    0b10000001,
+    0b00100100,
+    0b00100100,
+    0b00000000,
+    0b00100100,
+    0b10011001,
+    0b11000011,
+};
 
 const TerrainDirection = enum {
     up,
@@ -60,7 +81,7 @@ var terrain_width_scale: f32 = 1.0;
 var terrain_min: f32 = -1.0;
 var terrain_max: f32 = 0.4;
 var player_pos: Vec2 = .{ .x = 30, .y = 30 };
-var player_vel: Vec2 = .{ .x = 1, .y = 1 };
+var player_vel: Vec2 = .{ .x = 1, .y = 0 };
 var button_down_x_vel: f32 = 1.0;
 var prev_ground: bool = false;
 var prev_slow: u32 = 0;
@@ -73,10 +94,20 @@ var speed_average: [60]f32 = undefined;
 var prev_note_played: u32 = 0;
 var trails: [30]Trail = undefined;
 var prev_trail_update: u32 = 0;
+var mode: Mode = .menu;
+var dist: [6]u8 = undefined;
 
 const NUM_WAVE_POINTS = SCREEN_WIDTH * TERRAIN_WIDTH;
 
 var terrain: [NUM_WAVE_POINTS]f32 = undefined;
+
+const Mode = enum {
+    menu,
+    intro,
+    game,
+    end,
+    post_end,
+};
 
 const Note = enum {
     Gl,
@@ -87,6 +118,7 @@ const Note = enum {
     G,
     A,
     B,
+    Ch,
 
     fn to_freq(self: *const Note) u32 {
         return switch (self.*) {
@@ -98,6 +130,7 @@ const Note = enum {
             .G => 392,
             .A => 440,
             .B => 494,
+            .Ch => 524,
         };
     }
 };
@@ -121,6 +154,8 @@ const ode_to_joy: [128]?Note = [_]?Note{
     .C, null, .C, null, .D, null, .E, null, .D, null, null, .C,   .C,  null, null, null,
 };
 
+const final: [5]Note = [_]Note{ .C, .E, .G, .B, .Ch };
+
 export fn start() void {
     update_terrain();
     w4.PALETTE.* = .{
@@ -129,9 +164,143 @@ export fn start() void {
         0x9999dd,
         0xddddff,
     };
+    mode = .menu;
 }
 
 export fn update() void {
+    switch (mode) {
+        .menu => menu_update(),
+        .intro => intro_update(),
+        .game => game_update(),
+        .end => end_update(),
+        .post_end => game_update(),
+    }
+}
+
+fn menu_update() void {
+    draw_background();
+    w4.DRAW_COLORS.* = 0x4130;
+    var i: u8 = 0;
+    while (i < title_sprites.len) : (i += 1) {
+        const sprite = title_sprites[i];
+        const bound = title_sprites_bounds[i];
+        w4.blit(sprite[0..].ptr, bound[0], bound[1], bound[2], bound[3], BLIT_FLAG);
+    }
+    w4.DRAW_COLORS.* = 0x01;
+    if (ticks % 48 > 24) w4.text("Press X", 80, 142);
+    if (ticks % 24 == 0) {
+        const note = get_note_reverse();
+        if (note) |freq| {
+            w4.tone(freq / 2, 6 | (12 << 8), 3, w4.TONE_PULSE1);
+            w4.tone(freq, 12 | (12 << 8), 3, w4.TONE_PULSE2);
+            w4.tone(freq, 6 | (60 << 8), 10, w4.TONE_TRIANGLE);
+        }
+    }
+    ticks += 1;
+    const gamepad = w4.GAMEPAD1.*;
+    const pressed_this_frame = gamepad & (gamepad ^ prev_gamepad);
+    _ = gamepad & pressed_this_frame;
+    const button_down = gamepad & w4.BUTTON_1 != 0;
+    if (button_down) {
+        ticks = 0;
+        mode = .intro;
+        note_index = 0;
+    }
+}
+
+fn intro_update() void {
+    draw_background();
+    const offset = @floatToInt(u8, map(0, 240, 80, 0, @intToFloat(f32, ticks)));
+    draw_hills(offset);
+    const y_offset = @floatToInt(i32, map(0, 240, 0, 500, @intToFloat(f32, ticks)));
+    w4.DRAW_COLORS.* = 0x4130;
+    var i: u8 = 0;
+    while (i < title_sprites.len - 1) : (i += 1) {
+        const sprite = title_sprites[i];
+        const bound = title_sprites_bounds[i];
+        w4.blit(sprite[0..].ptr, bound[0], bound[1] - y_offset, bound[2], bound[3], BLIT_FLAG);
+    }
+    const text_offset = @floatToInt(i32, map(0, 100, 50, 0, @intToFloat(f32, std.math.min(100, ticks))));
+    w4.DRAW_COLORS.* = 0x01;
+    w4.text("Hold X to dive", 23, 132);
+    w4.text("Release X to soar", 13, 142);
+    w4.DRAW_COLORS.* = 0x04;
+    w4.text("The moon", 43, 20 + text_offset);
+    w4.text("calls for you", 25, 30 + text_offset);
+    w4.DRAW_COLORS.* = 0x0310;
+    const sprite = player_sprites[1][0..].ptr;
+    const x = @floatToInt(i32, map(0, 240, -120, 30, @intToFloat(f32, ticks)));
+    w4.blit(sprite, x - PLAYER_RADIUS, player_pos.yi() - PLAYER_RADIUS, PLAYER_WIDTH, PLAYER_HEIGHT, BLIT_FLAG);
+    ticks += 1;
+    if (ticks == 240) {
+        w4.tone(660, 6 | (100 << 8), 30, w4.TONE_TRIANGLE);
+        mode = .game;
+        // ticks = 0;
+        return;
+    }
+    if (ticks % 60 == 0) w4.tone(330, 6 | (60 << 8), 10, w4.TONE_TRIANGLE);
+}
+
+fn end_update() void {
+    draw_background();
+    draw_hills(0);
+    if (ticks < GAME_TICKS + 300) {
+        if ((ticks - GAME_TICKS) % 60 == 10 and note_index < final.len) {
+            w4.tone(final[note_index].to_freq(), 6 | (100 << 8), 30, w4.TONE_TRIANGLE);
+            note_index += 1;
+        }
+    } else {
+        if ((ticks - GAME_TICKS) % 8 == 4 and note_index < final.len) {
+            w4.tone(final[note_index].to_freq(), 6 | (100 << 8), 30, w4.TONE_TRIANGLE);
+            note_index += 1;
+        }
+    }
+    ticks += 1;
+    var num: u8 = 0;
+    w4.DRAW_COLORS.* = 0x04;
+    if ((ticks - GAME_TICKS) > 10) w4.text("the", 16, 20);
+    if ((ticks - GAME_TICKS) > 70) w4.text("moon", 48, 20);
+    if ((ticks - GAME_TICKS) > 130) w4.text("called", 88, 20);
+    if ((ticks - GAME_TICKS) > 190) w4.text("you", 30, 30);
+    if ((ticks - GAME_TICKS) > 250) w4.text("answered", 62, 30);
+    if (ticks > GAME_TICKS + 300) {
+        if ((ticks - GAME_TICKS - 300) > 4) num = 1;
+        if ((ticks - GAME_TICKS - 300) > 12) num = 2;
+        if ((ticks - GAME_TICKS - 300) > 20) num = 3;
+        if ((ticks - GAME_TICKS - 300) > 28) num = 4;
+        if ((ticks - GAME_TICKS - 300) > 36) num = 5;
+    }
+    calculate_dist(num);
+
+    w4.DRAW_COLORS.* = 0x01;
+    w4.text("Distance:", 15, 100);
+    w4.text(dist[0..], 90, 100);
+
+    draw_player_trails();
+    w4.DRAW_COLORS.* = 0x0310;
+    const sprite = player_sprites[1][0..].ptr;
+    w4.blit(sprite, player_pos.xi() - PLAYER_RADIUS, player_pos.yi() - PLAYER_RADIUS, PLAYER_WIDTH, PLAYER_HEIGHT, BLIT_FLAG);
+    if (ticks == GAME_TICKS + 300) {
+        note_index = 0;
+    }
+
+    if (ticks > GAME_TICKS + 300) {
+        w4.DRAW_COLORS.* = 0x04;
+        w4.blit(&smiley, 76, 70, 8, 8, w4.BLIT_1BPP);
+        w4.DRAW_COLORS.* = 0x02;
+        w4.text("Press X to continue", 6, 137);
+        w4.text("Press R to restart", 10, 147);
+        const gamepad = w4.GAMEPAD1.*;
+        const pressed_this_frame = gamepad & (gamepad ^ prev_gamepad);
+        _ = gamepad & pressed_this_frame;
+        const button_down = gamepad & w4.BUTTON_1 != 0;
+        if (button_down) {
+            mode = .post_end;
+        }
+    }
+}
+
+fn game_update() void {
     var ground_contact: bool = false;
     var slope_dir: TerrainDirection = .up;
 
@@ -142,6 +311,12 @@ export fn update() void {
     const button_released = (prev_gamepad & w4.BUTTON_1 != 0) and (!button_down);
     const button_pressed = (prev_gamepad & w4.BUTTON_1 == 0) and (button_down);
     if (button_released) prev_released = ticks;
+
+    if (mode == .game and ticks > GAME_TICKS) {
+        mode = .end;
+        note_index = 0;
+        boost_player_trails();
+    }
 
     player_pos.y += player_vel.y;
     if (button_down) {
@@ -210,17 +385,14 @@ export fn update() void {
         player_vel.y = -PLAYER_MIN_X_SPEED;
 
     update_terrain();
-    w4.DRAW_COLORS.* = 0x22;
-    w4.rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-    {
-        var i: u16 = 0;
-        while (i < SCREEN_WIDTH) : (i += 1) {
-            const terrain_index = (i + @floatToInt(u16, x_pos));
-            const y = terrain_height_at(terrain_index);
-            w4.DRAW_COLORS.* = 0x33;
-            w4.vline(@intCast(i32, i), y, SCREEN_HEIGHT);
-        }
+    draw_background();
+    draw_hills(0);
+    if (ticks < 600) {
+        w4.DRAW_COLORS.* = 0x02;
+        w4.text("Hold X to dive", 23, 132);
+        w4.text("Release X to soar", 13, 142);
     }
+    if (mode == .game) draw_timer();
     update_player_trails();
     draw_player_trails();
     if (ticks - prev_slow < 5) {
@@ -238,6 +410,82 @@ export fn update() void {
     x_pos += player_vel.x;
     player_vel.x -= 0.001;
     prev_ground = ground_contact;
+}
+
+fn draw_background() void {
+    w4.DRAW_COLORS.* = 0x22;
+    w4.rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    draw_moon();
+}
+
+fn draw_moon() void {
+    w4.DRAW_COLORS.* = 0x4130;
+    {
+        const sprite = moon_sprites.moon_sprites[0];
+        const bound = moon_sprites.moon_bounds[0];
+        w4.blit(sprite[0..].ptr, moon_pos[0] + bound[0], moon_pos[1] + bound[1], bound[2], bound[3], BLIT_FLAG);
+    }
+    // 0 is neutral, 1 is very happy, 2 is crash
+    var mood_index: usize = 0;
+    switch (mode) {
+        .game, .post_end => {
+            if (ticks - prev_slow < 20) {
+                mood_index = 2;
+            } else if (music_volume() > 40) {
+                mood_index = 1;
+            }
+        },
+        .end => mood_index = 1,
+        else => {},
+    }
+    {
+        const sprite = moon_sprites.moon_mood_sprites[mood_index];
+        const bound = moon_sprites.moon_mood_bounds[mood_index];
+        w4.blit(sprite[0..].ptr, moon_pos[0] + bound[0], moon_pos[1] + bound[1], bound[2], bound[3], BLIT_FLAG);
+    }
+    // no eyeballs when crash
+    if (mood_index == 2) return;
+    // 0 is low, 1 is mid, 2 is high
+    var eyeball_index: usize = 0;
+    switch (mode) {
+        .intro => eyeball_index = 2,
+        .game, .post_end, .end => {
+            if (player_pos.y < 50) {
+                eyeball_index = 2;
+            } else if (player_pos.y < 100) {
+                eyeball_index = 1;
+            }
+        },
+        else => {},
+    }
+    {
+        const sprite = moon_sprites.moon_eyeball_sprites[eyeball_index];
+        const bound = moon_sprites.moon_eyeball_bounds[eyeball_index];
+        w4.blit(sprite[0..].ptr, moon_pos[0] + bound[0], moon_pos[1] + bound[1], bound[2], bound[3], BLIT_FLAG);
+    }
+}
+
+fn draw_timer() void {
+    w4.DRAW_COLORS.* = 0x10;
+    w4.rect(20, 5, 122, 4);
+    var width: u32 = 0;
+    if (ticks < GAME_TICKS) {
+        const pct = (GAME_TICKS - @intToFloat(f32, ticks)) / GAME_TICKS;
+        width = @floatToInt(u32, pct * 120);
+    }
+    w4.DRAW_COLORS.* = 0x33;
+    if (width < 30 and ticks % 60 < 30) w4.DRAW_COLORS.* = 0x44;
+    w4.rect(21, 6, width, 2);
+}
+
+fn draw_hills(offset: u8) void {
+    var i: u16 = 0;
+    while (i < SCREEN_WIDTH) : (i += 1) {
+        const terrain_index = (i + @floatToInt(u16, x_pos));
+        const y = terrain_height_at(terrain_index) + offset;
+        w4.DRAW_COLORS.* = 0x33;
+        w4.vline(@intCast(i32, i), y, SCREEN_HEIGHT);
+    }
 }
 
 fn update_player_trails() void {
@@ -258,6 +506,27 @@ fn update_player_trails() void {
         const fract = 1.0 - (@intToFloat(f32, trails.len - i) / @intToFloat(f32, shift));
         const y: i8 = @floatToInt(i8, lerp(@intToFloat(f32, prev_y), player_pos.y, fract));
         trails[i] = Trail{ .y = y, .val = @floatToInt(u8, map(0, 1, 0, 12, amount)) };
+    }
+}
+
+fn boost_player_trails() void {
+    for (trails) |*trail| {
+        trail.val = 12;
+    }
+}
+
+fn calculate_dist(num: u8) void {
+    dist[5] = 'm';
+    var xpos = @floatToInt(usize, x_pos);
+    var i: usize = 4;
+    while (true) : (i -= 1) {
+        dist[i] = @intCast(u8, xpos % 10) + 48;
+        xpos = xpos / 10;
+        if (i == 0) break;
+    }
+    i = 0;
+    while (i < 5) : (i += 1) {
+        if (i >= num) dist[i] = ' ';
     }
 }
 
@@ -321,6 +590,16 @@ fn handle_music() void {
 fn get_note() ?u32 {
     note_index += 1;
     note_index = note_index % ode_to_joy[0..].len;
+    if (ode_to_joy[note_index]) |n| return n.to_freq();
+    return null;
+}
+
+fn get_note_reverse() ?u32 {
+    if (note_index == 0) {
+        note_index = ode_to_joy[0..].len - 1;
+    } else {
+        note_index -= 1;
+    }
     if (ode_to_joy[note_index]) |n| return n.to_freq();
     return null;
 }
