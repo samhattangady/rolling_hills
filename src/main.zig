@@ -96,6 +96,7 @@ var trails: [30]Trail = undefined;
 var prev_trail_update: u32 = 0;
 var mode: Mode = .menu;
 var dist: [6]u8 = undefined;
+var stars: [8]Star = undefined;
 
 const NUM_WAVE_POINTS = SCREEN_WIDTH * TERRAIN_WIDTH;
 
@@ -165,6 +166,14 @@ export fn start() void {
         0xddddff,
     };
     mode = .menu;
+    stars[0] = Star{ .x = @floatToInt(i32, map(0, 1, 0, 50, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[1] = Star{ .x = @floatToInt(i32, map(0, 1, 0, 50, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[2] = Star{ .x = @floatToInt(i32, map(0, 1, 50, 100, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[3] = Star{ .x = @floatToInt(i32, map(0, 1, 50, 100, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[4] = Star{ .x = @floatToInt(i32, map(0, 1, 50, 100, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[5] = Star{ .x = @floatToInt(i32, map(0, 1, 50, 100, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[6] = Star{ .x = @floatToInt(i32, map(0, 1, 100, 160, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
+    stars[7] = Star{ .x = @floatToInt(i32, map(0, 1, 100, 160, random_float())), .y = @floatToInt(i32, map(0, 1, 0, 90, random_float())), .beat = @floatToInt(u8, map(0, 1, 30, 54, random_float())) };
 }
 
 export fn update() void {
@@ -404,6 +413,11 @@ fn game_update() void {
     w4.blit(sprite, player_pos.xi() - PLAYER_RADIUS, player_pos.yi() - PLAYER_RADIUS, PLAYER_WIDTH, PLAYER_HEIGHT, BLIT_FLAG);
     speed_average[ticks % speed_average.len] = player_vel.x;
     if (prev_slow == ticks) w4.tone(100, 5 | (20 << 8), music_volume(), w4.TONE_NOISE);
+    if (mode == .post_end) {
+        calculate_dist(5);
+        w4.DRAW_COLORS.* = 0x02;
+        w4.text(dist[0..], 110, 150);
+    }
     handle_music();
     prev_gamepad = w4.GAMEPAD1.*;
     ticks += 1;
@@ -416,6 +430,17 @@ fn draw_background() void {
     w4.DRAW_COLORS.* = 0x22;
     w4.rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     draw_moon();
+    draw_stars();
+}
+
+fn draw_stars() void {
+    w4.DRAW_COLORS.* = 0x33;
+    for (stars) |star| {
+        if ((ticks + 50) % star.beat > 3) {
+            w4.hline(star.x - 1, star.y, 3);
+            w4.vline(star.x, star.y - 1, 3);
+        }
+    }
 }
 
 fn draw_moon() void {
@@ -429,7 +454,7 @@ fn draw_moon() void {
     var mood_index: usize = 0;
     switch (mode) {
         .game, .post_end => {
-            if (ticks - prev_slow < 20) {
+            if (ticks - prev_slow < 50) {
                 mood_index = 2;
             } else if (music_volume() > 40) {
                 mood_index = 1;
@@ -485,6 +510,36 @@ fn draw_hills(offset: u8) void {
         const y = terrain_height_at(terrain_index) + offset;
         w4.DRAW_COLORS.* = 0x33;
         w4.vline(@intCast(i32, i), y, SCREEN_HEIGHT);
+        if (terrain_index % SCREEN_WIDTH == 7) {
+            // draw far street lamp
+            w4.DRAW_COLORS.* = 0x33;
+            w4.vline(@intCast(i32, i), y - 15, 25);
+            w4.vline(@intCast(i32, i) + 1, y - 15, 25);
+            w4.DRAW_COLORS.* = 0x44;
+            w4.hline(@intCast(i32, i) + 1, y - 15, 3);
+            w4.DRAW_COLORS.* = 0x33;
+            w4.hline(@intCast(i32, i), y - 16, 4);
+        }
+    }
+    if (mode == .end) return;
+    i = 0;
+    while (i < SCREEN_WIDTH) : (i += 1) {
+        // draw foreground street lamp
+        const terrain_index2 = (i + @floatToInt(u16, 1.8 * x_pos));
+        if (terrain_index2 % (SCREEN_WIDTH * 3) == (SCREEN_WIDTH + 25)) {
+            // TODO (20 Jan 2022 sam): Import the sprite here instead?
+            w4.DRAW_COLORS.* = 0x11;
+            w4.rect(@intCast(i32, i), 97, 5, 63);
+            w4.hline(@intCast(i32, i), 96, 12);
+            w4.hline(@intCast(i32, i), 95, 13);
+            w4.hline(@intCast(i32, i), 94, 13);
+            w4.hline(@intCast(i32, i), 93, 13);
+            w4.hline(@intCast(i32, i) + 1, 92, 11);
+            w4.hline(@intCast(i32, i) + 3, 91, 7);
+            w4.DRAW_COLORS.* = 0x44;
+            w4.hline(@intCast(i32, i) + 3, 96, 8);
+            w4.hline(@intCast(i32, i) + 4, 95, 6);
+        }
     }
 }
 
@@ -701,6 +756,12 @@ const Vec2 = struct {
     pub fn yi(self: *const Self) i32 {
         return @floatToInt(i32, self.y);
     }
+};
+
+const Star = struct {
+    x: i32,
+    y: i32,
+    beat: u8,
 };
 
 fn assert(condition: bool) void {
